@@ -443,7 +443,7 @@ void run_all_tests(pax_buf_t *fb, void (*blit)(void)) {
     dma_done_sem = xSemaphoreCreateBinary();
     async_memcpy_config_t dma_cfg = ASYNC_MEMCPY_DEFAULT_CONFIG();
     async_memcpy_handle_t mcp = NULL;
-    esp_err_t dma_err = esp_async_memcpy_install(&dma_cfg, &mcp);
+    esp_err_t dma_err = esp_async_memcpy_install_gdma_axi(&dma_cfg, &mcp);
     if (dma_err == ESP_OK) {
         report(fb, blit, line++, "3. DMA vs SIMD memcpy");
         test_dma_vs_simd(fb, blit, &line, mcp, 128);
