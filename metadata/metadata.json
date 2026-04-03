@@ -1,6 +1,6 @@
 {
-  "name": "Grace Template",
-  "description": "Template app using Graceloader",
+  "name": "SIMD tests",
+  "description": "SIMD tests app using Graceloader",
   "categories": ["tools"],
   "version": "0.0.1",
   "icon": {

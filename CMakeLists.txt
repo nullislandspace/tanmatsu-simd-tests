@@ -11,6 +11,18 @@ project(app C)
 set(APP_SOURCES
     main/main.c
     main/crt0.c
+    main/pie_tests.c
+    main/pie_test_load_store.c
+    main/pie_test_arithmetic.c
+    main/pie_test_multiply.c
+    main/pie_test_compare.c
+    main/pie_test_shift.c
+    main/pie_test_logical.c
+    main/pie_test_convert.c
+    main/pie_test_move.c
+    main/pie_test_fft.c
+    main/pie_test_loop.c
+    main/test_runner.c
 )
 
 # Include directories — add paths to your headers here
