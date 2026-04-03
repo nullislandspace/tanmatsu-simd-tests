@@ -20,6 +20,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Set to 1 to enable memcpy/memset/DMA benchmarks */
+#define ENABLE_MEMCPY_MEMSET_DMA_TESTS 0
+
 static const char TAG[] = "test";
 
 #define LINE_HEIGHT  18
@@ -411,6 +414,7 @@ void run_all_tests(pax_buf_t *fb, void (*blit)(void)) {
     run_pie_instruction_tests(fb, blit, &line);
     line++;
 
+#if ENABLE_MEMCPY_MEMSET_DMA_TESTS
     /* --- SIMD memcpy benchmark ---
      * Tests increasing sizes to show how throughput scales. */
     report(fb, blit, line++, "1. memcpy (byte-loop vs libc vs SIMD)");
@@ -462,6 +466,7 @@ void run_all_tests(pax_buf_t *fb, void (*blit)(void)) {
     }
     vSemaphoreDelete(dma_done_sem);
     line++;
+#endif /* ENABLE_MEMCPY_MEMSET_DMA_TESTS */
 
     /* --- Done --- */
     report(fb, blit, line++, "All tests complete. F1 = exit.");
