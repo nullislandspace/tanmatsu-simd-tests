@@ -8,25 +8,18 @@
 
 #pragma once
 
-#include "pax_gfx.h"
+#include "test_runner.h"
 #include "esp_log.h"
-#include "pax_fonts.h"
-#include "pax_text.h"
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
-
-#define PIE_LINE_HEIGHT 18
-#define PIE_FONT_SIZE   16
 
 static const char PIE_TAG[] = "pie_test";
 
 /* ── Display + serial logging ─────────────────────────────────── */
 
 static inline void pie_report_line(pax_buf_t *fb, void (*blit)(void), int line, const char *msg) {
-    pax_draw_text(fb, 0xFF000000, pax_font_sky_mono, PIE_FONT_SIZE, 4, line * PIE_LINE_HEIGHT, msg);
-    ESP_LOGI(PIE_TAG, "%s", msg);
-    blit();
+    report(fb, blit, line, msg);
 }
 
 /* ── Result checking ──────────────────────────────────────────── */

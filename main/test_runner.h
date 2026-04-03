@@ -10,4 +10,7 @@
 /* Run all tests: PIE instruction verification, then H.264 function tests.
  * Results displayed on screen and logged via ESP_LOGI.
  * Does not return — enters idle loop after tests complete. */
+/* Report a line to the scrolling display and serial log. */
+void report(pax_buf_t *fb, void (*blit)(void), int line, const char *msg);
+
 void run_all_tests(pax_buf_t *fb, void (*blit)(void));
