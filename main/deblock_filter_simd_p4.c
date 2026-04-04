@@ -20,18 +20,10 @@ void FilterHorLuma_simd(
     u32 alpha = thresholds->alpha;
     u32 beta = thresholds->beta;
 
-    /* Broadcast threshold values to all 16 lanes via u32 word fill */
-    u32 __attribute__((aligned(16))) bcast_buf[8]; /* [0..3]=alpha, [4..7]=beta */
-    {
-        u32 a4 = (u8)alpha;
-        a4 |= (a4 << 8);
-        a4 |= (a4 << 16);
-        bcast_buf[0] = bcast_buf[1] = bcast_buf[2] = bcast_buf[3] = a4;
-        u32 b4 = (u8)beta;
-        b4 |= (b4 << 8);
-        b4 |= (b4 << 16);
-        bcast_buf[4] = bcast_buf[5] = bcast_buf[6] = bcast_buf[7] = b4;
-    }
+    /* Store threshold bytes for vldbc broadcast (single byte each, aligned) */
+    u8 __attribute__((aligned(16))) thresh_bytes[16];
+    thresh_bytes[0] = (u8)alpha;
+    thresh_bytes[8] = (u8)beta;  /* offset 8 so second vldbc.8.ip can use stride */
 
     /* Pre-compute row pointers */
     u8 *row_p1_ptr = data - imageWidth * 2;
@@ -42,8 +34,8 @@ void FilterHorLuma_simd(
     u8 __attribute__((aligned(16))) mask_bytes[16];
 
     /*
-     * Phase 1: Single asm block — usar load 4 rows, load broadcasts,
-     * compute threshold mask, store result. Uses all 8 Q registers.
+     * Phase 1: Single asm block — usar load 4 rows, broadcast thresholds
+     * via vldbc.8, compute threshold mask, store result.
      *
      * q0=p1, q1=p0, q2=q0, q3=q1, q4=alpha, q5=beta, q6=mask, q7=temp
      */
@@ -52,8 +44,8 @@ void FilterHorLuma_simd(
         register u8 *r1 asm("a1") = row_p0_ptr;
         register u8 *r2 asm("a2") = row_q0_ptr;
         register u8 *r3 asm("a3") = row_q1_ptr;
-        register u8 *r4 asm("a4") = (u8 *)bcast_buf;       /* alpha */
-        register u8 *r5 asm("a5") = (u8 *)(bcast_buf + 4); /* beta */
+        register u8 *r4 asm("a4") = thresh_bytes;       /* alpha at [0] */
+        register u8 *r5 asm("a5") = thresh_bytes + 8;   /* beta at [8] */
 
         asm volatile(
             /* ── Load 4 rows via usar (unaligned) ── */
@@ -74,9 +66,9 @@ void FilterHorLuma_simd(
             "esp.ld.128.usar.ip q7, %[r3], 0\n"
             "esp.src.q q3, q3, q7\n"
 
-            /* ── Load alpha and beta broadcasts (aligned) ── */
-            "esp.vld.128.ip q4, %[r4], 0\n"
-            "esp.vld.128.ip q5, %[r5], 0\n"
+            /* ── Broadcast alpha and beta via vldbc.8 (1 byte → 16 lanes) ── */
+            "esp.vldbc.8.ip q4, %[r4], 0\n"
+            "esp.vldbc.8.ip q5, %[r5], 0\n"
 
             /* ── Compute |p0 - q0| < alpha ── */
             "esp.vsub.u8 q6, q1, q2\n"

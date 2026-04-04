@@ -85,6 +85,21 @@ const u8 h264bsd_test_clip[1280] =
 };
 
 /* ═══════════════════════════════════════════════════════════════════
+ * SRAM-resident clipping table for fast access
+ * ═══════════════════════════════════════════════════════════════════ */
+
+u8 *h264bsd_test_clip_sram = NULL;
+
+void h264_test_init(void)
+{
+    if (h264bsd_test_clip_sram) return; /* already initialized */
+
+    /* Allocate 16-byte aligned copy in SRAM */
+    h264bsd_test_clip_sram = (u8 *)aligned_alloc(16, 1280);
+    memcpy(h264bsd_test_clip_sram, h264bsd_test_clip, 1280);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  * Helper: allocate and initialize a test I420 image
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -601,6 +616,8 @@ static void test_interp_chroma_hor(pax_buf_t *fb, void (*blit)(void), int *line)
 
 void run_h264_tests(pax_buf_t *fb, void (*blit)(void), int *line)
 {
+    h264_test_init();
+
     report(fb, blit, (*line)++, "--- H264 Function Tests ---");
 
     test_convert_ppa(fb, blit, line);

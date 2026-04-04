@@ -35,8 +35,15 @@ typedef signed int      i32;
 
 /* ── Clipping table (512 zeros, 0..255 identity, 512 x 255) ── */
 
+/* Flash-resident source table */
 extern const u8 h264bsd_test_clip[1280];
-#define TEST_CLP (h264bsd_test_clip + 512)
+
+/* SRAM-resident copy for fast access — call h264_test_init() before use */
+extern u8 *h264bsd_test_clip_sram;
+#define TEST_CLP (h264bsd_test_clip_sram + 512)
+
+/* Initialize SRAM-resident tables. Must be called once at startup. */
+void h264_test_init(void);
 
 /* ── Test-local image struct ────────────────────────────────── */
 

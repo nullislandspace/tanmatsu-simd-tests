@@ -1,6 +1,6 @@
 # ESP32-P4 PIE SIMD Instruction Reference
 
-Verified on hardware, 216/216 tests passing. This is the only known comprehensive
+Verified on hardware, 229/229 tests passing. This is the only known comprehensive
 reference for the P4 PIE instruction set — Espressif has not published documentation.
 
 ## Architecture
@@ -70,6 +70,10 @@ Store UPPER 64 bits of qs to memory. addr += rs.
 
 ### esp.vldbc.8.ip qd, addr, imm
 Broadcast-load: read 1 byte, replicate to all 16 bytes of qd. addr += imm.
+**Optimization use**: excellent for broadcasting runtime variables (e.g., threshold
+values) to all lanes. Only reads 1 byte from memory — far cheaper than storing a
+16-byte broadcast buffer then loading it with vld.128. Measured 18% speedup
+(2.58x → 3.04x) on deblocking filter when replacing word-fill broadcast with vldbc.8.
 
 ### esp.vldbc.8.xp qd, addr, rs
 Broadcast-load 1 byte. addr += rs.
@@ -177,10 +181,37 @@ Vector add: qd[i] = sat(qs[i] + qt[i])
 Vector subtract: qd[i] = sat(qs[i] - qt[i])
 
 ### esp.vsadds.{s16|s8|u16|u8} qd, qs, rs
-Scalar add to all lanes: qd[i] = sat(qs[i] + rs)
+Scalar add to all lanes: qd[i] = sat(qs[i] + truncate(rs))
+
+**P4 finding — scalar truncation**: The scalar register value is **truncated to the
+lane width** before the addition. The full 32-bit register value is NOT used.
+- `.u16` / `.s16`: uses low 16 bits of rs (rs & 0xFFFF)
+- `.u8` / `.s8`: uses low 8 bits of rs (rs & 0xFF)
+
+Consequences:
+- Passing 0x10000 to `.u16` adds 0 (not 65536) — identity operation
+- Passing 256 to `.u8` adds 0 (not 256) — identity operation
+- Passing -1 (0xFFFFFFFF) to `.u16` adds 0xFFFF = 65535 (unsigned truncation)
+
+**Broadcast pattern**: To broadcast a scalar to all lanes of a Q register:
+```asm
+esp.zero.q qd
+esp.vsadds.u16 qd, qd, rs   /* qd[i] = 0 + truncate_u16(rs) for all i */
+```
+Verified: `vsadds.u16(zeros, 255)` correctly produces [255, 255, 255, 255, 255, 255, 255, 255].
+
+**Alternative broadcast** using vldbc (loads from memory, but only 1 byte/halfword):
+```asm
+esp.vldbc.8.ip qd, addr, 0   /* broadcast byte at addr to all 16 u8 lanes */
+esp.vldbc.16.ip qd, addr, 0  /* broadcast halfword at addr to all 8 u16 lanes */
+```
+vldbc is preferred when the value is already in memory; vsadds when it's in a register.
 
 ### esp.vssubs.{s16|s8|u16|u8} qd, qs, rs
-Scalar subtract from all lanes: qd[i] = sat(qs[i] - rs)
+Scalar subtract from all lanes: qd[i] = sat(qs[i] - truncate(rs))
+
+Same scalar truncation rules as vsadds: the scalar operand is truncated to lane
+width before subtraction.
 
 ### esp.addx2 rd, rs1, rs2
 Scalar: rd = rs1 + (rs2 << 1). Verified: addx2(100, 25) = 150.
