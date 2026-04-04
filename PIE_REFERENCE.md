@@ -354,6 +354,19 @@ Unaligned source combine: extracts aligned 128-bit result from two usar-loaded r
 Uses internal USAR alignment state set by esp.ld.128.usar.ip.
 Verified at offsets 0, 1, 3, 7, 13.
 
+**CRITICAL P4 finding**: `src.q` does NOT use the SAR register set by `movx.w.sar`.
+It uses a **separate internal alignment state** that is ONLY set by `usar` loads.
+Setting SAR via `movx.w.sar` has no effect on `src.q` — all extractions produce the
+same result regardless of SAR value. Tested with SAR=0,1,2,4,6,8,10,15: all produced
+identical output determined by the last `usar` load's alignment offset.
+
+Additionally, `usar` loads **clobber the SAR register** — after an usar load, SAR
+contains garbage (e.g., 1378). Do not rely on SAR being preserved across usar loads.
+
+Consequence: there is no way to extract arbitrary byte-shifted views from Q registers
+using only register operations. Each shifted view requires a separate `usar` load from
+a different memory address.
+
 ### esp.src.q.qup qd, qs, qt
 Variant of src.q with queue-up semantics. Same unaligned extraction.
 

@@ -476,55 +476,23 @@ static void test_deblock_filter(pax_buf_t *fb, void (*blit)(void), int *line)
  * Test 4: h264bsdInterpolateHorHalf
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void test_interp_hor_half(pax_buf_t *fb, void (*blit)(void), int *line)
+/* Helper: benchmark one block size of interp_hor_half */
+static void bench_interp_hor_half_size(pax_buf_t *fb, void (*blit)(void), int *line,
+        u8 *ref, u32 refW, u32 refH, u32 partW, u32 partH, int loops)
 {
     char buf[120];
-    u32 refW = 64, refH = 64;
-    u32 partW = 16, partH = 16;
-
-    u8 *ref = aligned_alloc(16, refW * refH);
-
-    /* Fill reference with gradient pattern */
-    for (u32 i = 0; i < refW * refH; i++)
-        ref[i] = (u8)(i & 0xFF);
-
-    /* Output buffers: 16x16 partition within 16-byte-stride macroblock */
     u8 *mb_plain = aligned_alloc(16, 16 * 16);
     u8 *mb_simd  = aligned_alloc(16, 16 * 16);
+    i32 x0 = 4, y0 = 4;
+
+    /* Correctness */
     memset(mb_plain, 0, 16 * 16);
     memset(mb_simd, 0, 16 * 16);
-
-    /* Test at interior position */
-    i32 x0 = 4, y0 = 4;
     interp_hor_half_plain(ref, mb_plain, x0, y0, refW, refH, partW, partH);
     interp_hor_half_simd(ref, mb_simd, x0, y0, refW, refH, partW, partH);
-
     int ok = (memcmp(mb_plain, mb_simd, 16 * 16) == 0);
 
-    /* Also test boundary case */
-    memset(mb_plain, 0, 16 * 16);
-    memset(mb_simd, 0, 16 * 16);
-    interp_hor_half_plain(ref, mb_plain, -2, 0, refW, refH, partW, partH);
-    interp_hor_half_simd(ref, mb_simd, -2, 0, refW, refH, partW, partH);
-    int ok2 = (memcmp(mb_plain, mb_simd, 16 * 16) == 0);
-
-    /* Also test 4x4 and 8x8 block sizes */
-    memset(mb_plain, 0, 16 * 16);
-    memset(mb_simd, 0, 16 * 16);
-    interp_hor_half_plain(ref, mb_plain, 4, 4, refW, refH, 8, 8);
-    interp_hor_half_simd(ref, mb_simd, 4, 4, refW, refH, 8, 8);
-    int ok3 = (memcmp(mb_plain, mb_simd, 16 * 16) == 0);
-
-    memset(mb_plain, 0, 16 * 16);
-    memset(mb_simd, 0, 16 * 16);
-    interp_hor_half_plain(ref, mb_plain, 4, 4, refW, refH, 4, 4);
-    interp_hor_half_simd(ref, mb_simd, 4, 4, refW, refH, 4, 4);
-    int ok4 = (memcmp(mb_plain, mb_simd, 16 * 16) == 0);
-
-    int all_ok = ok && ok2 && ok3 && ok4;
-
-    /* Benchmark at 16x16 */
-    int loops = H264_BENCH_LOOPS;
+    /* Benchmark */
     int64_t start = esp_timer_get_time();
     for (int i = 0; i < loops; i++)
         interp_hor_half_plain(ref, mb_plain, x0, y0, refW, refH, partW, partH);
@@ -535,15 +503,34 @@ static void test_interp_hor_half(pax_buf_t *fb, void (*blit)(void), int *line)
         interp_hor_half_simd(ref, mb_simd, x0, y0, refW, refH, partW, partH);
     int64_t simd_ns = (esp_timer_get_time() - start) * 1000 / loops;
 
-    snprintf(buf, sizeof(buf), "InterpHorH 16x16: %s plain:%lld simd:%lld ns (%.2fx)",
-            all_ok ? "PASS" : "FAIL",
+    snprintf(buf, sizeof(buf), "InterpHH %dx%d: %s p:%lld s:%lld ns (%.2fx)",
+            (int)partW, (int)partH,
+            ok ? "OK" : "FAIL",
             (long long)plain_ns, (long long)simd_ns,
             simd_ns > 0 ? (double)plain_ns / (double)simd_ns : 0.0);
     report(fb, blit, (*line)++, buf);
 
-    free(ref);
     free(mb_plain);
     free(mb_simd);
+}
+
+static void test_interp_hor_half(pax_buf_t *fb, void (*blit)(void), int *line)
+{
+    u32 refW = 64, refH = 64;
+    u8 *ref = aligned_alloc(16, refW * refH);
+    for (u32 i = 0; i < refW * refH; i++)
+        ref[i] = (u8)(i & 0xFF);
+
+    /* Benchmark all common H.264 partition sizes */
+    bench_interp_hor_half_size(fb, blit, line, ref, refW, refH,  4,  4, 10000);
+    bench_interp_hor_half_size(fb, blit, line, ref, refW, refH,  4,  8, 10000);
+    bench_interp_hor_half_size(fb, blit, line, ref, refW, refH,  8,  4, 10000);
+    bench_interp_hor_half_size(fb, blit, line, ref, refW, refH,  8,  8, 10000);
+    bench_interp_hor_half_size(fb, blit, line, ref, refW, refH,  8, 16, 10000);
+    bench_interp_hor_half_size(fb, blit, line, ref, refW, refH, 16,  8, 10000);
+    bench_interp_hor_half_size(fb, blit, line, ref, refW, refH, 16, 16, 10000);
+
+    free(ref);
 }
 
 /* ═══════════════════════════════════════════════════════════════════

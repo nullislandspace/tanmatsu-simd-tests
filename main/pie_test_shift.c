@@ -589,4 +589,187 @@ void run_pie_test_shift(int *pass, int *total) {
         *pass += ok_u; (*total)++;
     }
 
+    /* ═══════════════════════════════════════════════════════════════
+     * esp.src.q with manually set SAR (movx.w.sar)
+     *
+     * Test whether src.q uses the SAR register set by movx.w.sar,
+     * or only the internal alignment state from usar loads.
+     *
+     * Setup: load two known 128-bit values into q0 and q1.
+     * Then set SAR to various byte offsets and verify src.q
+     * extracts the correct 16-byte window from the q0:q1
+     * concatenation.
+     *
+     * q0 = [0,1,2,...,15], q1 = [16,17,18,...,31]
+     * Concatenation = [0,1,2,...,31] (32 bytes)
+     * src.q(q0,q1) with SAR=N should give bytes [N..N+15]
+     * ═══════════════════════════════════════════════════════════════ */
+
+    /*
+     * ═══════════════════════════════════════════════════════════════
+     * CONFIRMED: esp.src.q does NOT use SAR set by movx.w.sar.
+     * It uses a separate internal alignment state set ONLY by usar loads.
+     * There is no register-only way to byte-shift Q register contents.
+     * ═══════════════════════════════════════════════════════════════
+     */
+    ESP_LOGI(PIE_TAG, "--- src.q ignores movx.w.sar (confirmed) ---");
+    {
+        /* Verify that src.q output is independent of SAR value.
+         * We set SAR=0 and SAR=8 and confirm identical output. */
+        uint8_t a[16] __attribute__((aligned(16)));
+        uint8_t b[16] __attribute__((aligned(16)));
+        uint8_t out0[16] __attribute__((aligned(16)));
+        uint8_t out8[16] __attribute__((aligned(16)));
+        for (int i = 0; i < 16; i++) { a[i] = (uint8_t)i; b[i] = (uint8_t)(i + 16); }
+
+        register uint8_t *pa asm("a0") = a;
+        register uint8_t *pb asm("a1") = b;
+        register uint8_t *po asm("a2") = out0;
+        register uint32_t sar asm("a3") = 0;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vld.128.ip q1, %[pb], 0\n"
+            "esp.movx.w.sar %[sar]\n"
+            "esp.src.q q2, q0, q1\n"
+            "esp.vst.128.ip q2, %[po], 0\n"
+            : [pa] "+r"(pa), [pb] "+r"(pb), [po] "+r"(po)
+            : [sar] "r"(sar) : "memory"
+        );
+
+        pa = a; pb = b; po = out8; sar = 8;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vld.128.ip q1, %[pb], 0\n"
+            "esp.movx.w.sar %[sar]\n"
+            "esp.src.q q2, q0, q1\n"
+            "esp.vst.128.ip q2, %[po], 0\n"
+            : [pa] "+r"(pa), [pb] "+r"(pb), [po] "+r"(po)
+            : [sar] "r"(sar) : "memory"
+        );
+
+        int ok = (memcmp(out0, out8, 16) == 0);
+        if (ok) ESP_LOGI(PIE_TAG, "  PASS: src.q SAR=0 == SAR=8 (SAR ignored)");
+        else    ESP_LOGE(PIE_TAG, "  FAIL: src.q SAR=0 != SAR=8 (SAR affects output?!)");
+        *pass += ok; (*total)++;
+    }
+
+    /* ── srci.2q / slci.2q verified behavior ──
+     *
+     * Confirmed on hardware with q0=[0..15], q1=[16..31]:
+     *
+     * srci.2q q0, q1, imm: shifts q0 right by (imm+1) bytes, ZERO-fills.
+     *   imm=0 → [1,2,...,15, 0]
+     *   imm=1 → [2,3,...,15, 0,0]
+     *   etc. q1 is IGNORED.
+     *
+     * slci.2q q0, q1, imm: shifts q0 left by (imm+1) bytes, fills from
+     *   END of q1 (concatenation: q1[tail] prepended to q0[head]).
+     *   imm=0 → [31, 0,1,...,14]
+     *   imm=1 → [30,31, 0,1,...,13]
+     *   etc.
+     *
+     * Neither provides a right-shift-with-carry from q1 into q0.
+     */
+    ESP_LOGI(PIE_TAG, "--- srci/slci.2q verified ---");
+    {
+        uint8_t a[16] __attribute__((aligned(16)));
+        uint8_t b[16] __attribute__((aligned(16)));
+        for (int i = 0; i < 16; i++) { a[i] = (uint8_t)i; b[i] = (uint8_t)(i + 16); }
+
+        /* srci.2q imm=2: expect [3,4,...,15, 0,0,0] */
+        {
+            uint8_t out[16] __attribute__((aligned(16)));
+            uint8_t expect[16] = {3,4,5,6,7,8,9,10,11,12,13,14,15,0,0,0};
+            register uint8_t *pa asm("a0") = a;
+            register uint8_t *pb asm("a1") = b;
+            register uint8_t *po asm("a2") = out;
+            asm volatile(
+                "esp.vld.128.ip q0, %[pa], 0\n"
+                "esp.vld.128.ip q1, %[pb], 0\n"
+                "esp.srci.2q q0, q1, 2\n"
+                "esp.vst.128.ip q0, %[po], 0\n"
+                : [pa]"+r"(pa),[pb]"+r"(pb),[po]"+r"(po) :: "memory"
+            );
+            *pass += pie_check("srci.2q imm=2 (right shift 3, zero-fill)", out, expect, 16);
+            (*total)++;
+        }
+
+        /* slci.2q imm=2: expect [29,30,31, 0,1,...,12] */
+        {
+            uint8_t out[16] __attribute__((aligned(16)));
+            uint8_t expect[16] = {29,30,31,0,1,2,3,4,5,6,7,8,9,10,11,12};
+            register uint8_t *pa asm("a0") = a;
+            register uint8_t *pb asm("a1") = b;
+            register uint8_t *po asm("a2") = out;
+            asm volatile(
+                "esp.vld.128.ip q0, %[pa], 0\n"
+                "esp.vld.128.ip q1, %[pb], 0\n"
+                "esp.slci.2q q0, q1, 2\n"
+                "esp.vst.128.ip q0, %[po], 0\n"
+                : [pa]"+r"(pa),[pb]"+r"(pb),[po]"+r"(po) :: "memory"
+            );
+            *pass += pie_check("slci.2q imm=2 (left shift 3, fill from q1 tail)", out, expect, 16);
+            (*total)++;
+        }
+    }
+
+    /* Also test: does usar load OVERWRITE a manually set SAR?
+     * Set SAR=5, then do an usar load from an aligned address (offset 0).
+     * Does SAR become 0 (from usar) or stay 5? */
+    {
+        uint8_t aligned_data[32] __attribute__((aligned(16)));
+        for (int i = 0; i < 32; i++) aligned_data[i] = (uint8_t)(i + 100);
+
+        uint8_t a[16] __attribute__((aligned(16)));
+        uint8_t b[16] __attribute__((aligned(16)));
+        for (int i = 0; i < 16; i++) { a[i] = (uint8_t)i; b[i] = (uint8_t)(i + 16); }
+
+        uint8_t out[16] __attribute__((aligned(16)));
+        register uint32_t sar_before asm("a0") = 5;
+        register uint8_t *pdata asm("a1") = aligned_data;  /* 16-byte aligned → usar offset=0 */
+        register uint8_t *pa asm("a2") = a;
+        register uint8_t *pb asm("a3") = b;
+        register uint8_t *po asm("a4") = out;
+        register uint32_t sar_after asm("a5");
+
+        asm volatile(
+            /* Set SAR=5 manually */
+            "esp.movx.w.sar %[sar_b]\n"
+            /* Do an usar load from aligned address (should set usar offset=0) */
+            "esp.ld.128.usar.ip q3, %[pd], 16\n"
+            /* Read SAR back */
+            "esp.movx.r.sar %[sar_a]\n"
+            /* Now do src.q with q0,q1 — will it use the usar state or SAR? */
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vld.128.ip q1, %[pb], 0\n"
+            "esp.src.q q2, q0, q1\n"
+            "esp.vst.128.ip q2, %[po], 0\n"
+            : [pd] "+r"(pdata), [pa] "+r"(pa), [pb] "+r"(pb),
+              [po] "+r"(po), [sar_a] "=r"(sar_after)
+            : [sar_b] "r"(sar_before) : "memory"
+        );
+
+        ESP_LOGI(PIE_TAG, "  SAR before usar: 5, SAR after usar (aligned): %d", (int)sar_after);
+
+        /* If usar overwrote SAR to 0, src.q gives bytes [0..15] */
+        uint8_t expect_sar0[16];
+        for (int i = 0; i < 16; i++) expect_sar0[i] = (uint8_t)i;
+        /* If usar did NOT overwrite SAR (still 5), src.q gives bytes [5..20] */
+        uint8_t expect_sar5[16];
+        for (int i = 0; i < 16; i++) expect_sar5[i] = (uint8_t)(i + 5);
+
+        int is_sar0 = (memcmp(out, expect_sar0, 16) == 0);
+        int is_sar5 = (memcmp(out, expect_sar5, 16) == 0);
+
+        if (is_sar0) {
+            ESP_LOGI(PIE_TAG, "  PASS: usar load OVERWRITES SAR (src.q used SAR=0)");
+        } else if (is_sar5) {
+            ESP_LOGI(PIE_TAG, "  PASS: usar load does NOT overwrite SAR (src.q used SAR=5)");
+        } else {
+            ESP_LOGE(PIE_TAG, "  FAIL: unexpected src.q result after usar + manual SAR");
+            pie_log_vec_u8("  got", out);
+        }
+        *pass += (is_sar0 || is_sar5);
+        (*total)++;
+    }
 }

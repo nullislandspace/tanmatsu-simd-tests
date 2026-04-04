@@ -16,8 +16,8 @@ residuals, and applies new optimization techniques discovered along the way.
 | write_output_blocks | 9% (9ms) | **4.52x** | SIMD optimized |
 | deblock_hor_luma | 24% (24ms) | **3.04x** | SIMD threshold + scalar filter |
 | convert_image_to_ppa | 11% (11ms) | **1.06x** | Scalar word-pack (PIE N/A) |
-| interpolate_hor_half | 7% (part of 20ms) | pending | Not yet optimized |
-| interpolate_chroma_hor | 7% (7ms) | pending | Not yet optimized |
+| interpolate_hor_half | 7% (part of 20ms) | **1.02x** (abandoned) | Scalar kept — sliding window defeats SIMD |
+| interpolate_chroma_hor | 7% (7ms) | skipped | Scalar kept — same issues + small blocks |
 
 ### Round 1 Results (i32 block-order residual layout, historical)
 
@@ -347,8 +347,11 @@ residuals with 16-byte alignment.
 1. **Only 8 vector registers (q0-q7)**: Severe register pressure. Recommend
    reserving q6-q7 for constants (zero, 255) and using q0-q5 for data.
 
-2. **No lane shuffle/permute**: Can't rearrange elements within a register. This
-   prevents vectorizing operations that need cross-lane data or non-power-of-2
+2. **No lane shuffle/permute and no register-only byte shift**: Can't rearrange
+   elements within a register. `esp.src.q` does NOT use SAR set by `movx.w.sar` —
+   it only uses internal alignment state from `usar` loads. There is no way to
+   extract byte-shifted views from Q registers without going back to memory.
+   This prevents vectorizing horizontal sliding-window filters and non-power-of-2
    interleave patterns (like PPA's 3:1 chroma:luma ratio).
 
 3. **No i16 shift instructions**: `vsr.s32` and `vsl.32` exist for 32-bit lanes
