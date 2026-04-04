@@ -44,81 +44,103 @@ void FilterHorLuma_simd(
      *
      * PIE esp.vcmp.lt.u8 sets each byte to 0xFF if less-than, 0x00 otherwise.
      */
-    u8 __attribute__((aligned(16))) row_p1[16];
-    u8 __attribute__((aligned(16))) row_p0[16];
-    u8 __attribute__((aligned(16))) row_q0[16];
-    u8 __attribute__((aligned(16))) row_q1[16];
-    u8 __attribute__((aligned(16))) bcast_alpha[16];
-    u8 __attribute__((aligned(16))) bcast_beta[16];
+    u32 __attribute__((aligned(16))) bcast_alpha[4];
+    u32 __attribute__((aligned(16))) bcast_beta[4];
     u8 __attribute__((aligned(16))) mask_bytes[16];
 
-    /* Copy rows to aligned buffers (source rows may not be 16-byte aligned) */
-    memcpy(row_p1, data - imageWidth * 2, 16);
-    memcpy(row_p0, data - imageWidth, 16);
-    memcpy(row_q0, data, 16);
-    memcpy(row_q1, data + imageWidth, 16);
-
-    /* Broadcast threshold values to all 16 lanes */
-    memset(bcast_alpha, (u8)alpha, 16);
-    memset(bcast_beta, (u8)beta, 16);
+    /* Broadcast threshold values to all 16 lanes via u32 word fill */
+    {
+        u32 a4 = (u8)alpha;
+        a4 |= (a4 << 8);
+        a4 |= (a4 << 16);
+        bcast_alpha[0] = bcast_alpha[1] = bcast_alpha[2] = bcast_alpha[3] = a4;
+        u32 b4 = (u8)beta;
+        b4 |= (b4 << 8);
+        b4 |= (b4 << 16);
+        bcast_beta[0] = bcast_beta[1] = bcast_beta[2] = bcast_beta[3] = b4;
+    }
 
     {
-        register u8 *ptr0 asm("a0") = row_p1;
-        register u8 *ptr1 asm("a1") = row_p0;
+        /*
+         * Use usar (unaligned shift-register) loads to load rows directly
+         * from the image without memcpy to aligned buffers.
+         *
+         * usar pattern: first load captures alignment offset in SAR,
+         * second load gets next 16 bytes, then esp.src.q extracts
+         * the correct 16 bytes spanning the boundary.
+         *
+         * We reuse ptr0/ptr1 across loads. Each usar load pair needs
+         * the source pointer and the pointer+16.
+         */
+        register u8 *ptr0 asm("a0");
+        register u8 *ptr1 asm("a1");
 
-        /* Load p1 and p0 */
+        /* Load p1 (unaligned) into q0 */
+        ptr0 = data - imageWidth * 2;
         asm volatile(
-            "esp.vld.128.ip q0, %[r0], 0\n"   /* q0 = p1 */
-            "esp.vld.128.ip q1, %[r1], 0\n"   /* q1 = p0 */
-            : [r0] "+r"(ptr0), [r1] "+r"(ptr1) :: "memory"
+            "esp.ld.128.usar.ip q0, %[r0], 16\n"
+            "esp.ld.128.usar.ip q7, %[r0], 0\n"
+            "esp.src.q q0, q0, q7\n"
+            : [r0] "+r"(ptr0) :: "memory"
         );
 
-        ptr0 = row_q0;
-        ptr1 = row_q1;
-
-        /* Load q0 and q1 */
+        /* Load p0 (unaligned) into q1 */
+        ptr0 = data - imageWidth;
         asm volatile(
-            "esp.vld.128.ip q2, %[r0], 0\n"   /* q2 = q0 */
-            "esp.vld.128.ip q3, %[r1], 0\n"   /* q3 = q1 */
-            : [r0] "+r"(ptr0), [r1] "+r"(ptr1) :: "memory"
+            "esp.ld.128.usar.ip q1, %[r0], 16\n"
+            "esp.ld.128.usar.ip q7, %[r0], 0\n"
+            "esp.src.q q1, q1, q7\n"
+            : [r0] "+r"(ptr0) :: "memory"
         );
 
-        ptr0 = bcast_alpha;
-        ptr1 = bcast_beta;
+        /* Load q0_row (unaligned) into q2 */
+        ptr0 = data;
+        asm volatile(
+            "esp.ld.128.usar.ip q2, %[r0], 16\n"
+            "esp.ld.128.usar.ip q7, %[r0], 0\n"
+            "esp.src.q q2, q2, q7\n"
+            : [r0] "+r"(ptr0) :: "memory"
+        );
 
-        /* Load alpha and beta broadcasts */
+        /* Load q1_row (unaligned) into q3 */
+        ptr0 = data + imageWidth;
+        asm volatile(
+            "esp.ld.128.usar.ip q3, %[r0], 16\n"
+            "esp.ld.128.usar.ip q7, %[r0], 0\n"
+            "esp.src.q q3, q3, q7\n"
+            : [r0] "+r"(ptr0) :: "memory"
+        );
+
+        /* Load alpha and beta broadcasts (these are aligned) */
+        ptr0 = (u8 *)bcast_alpha;
+        ptr1 = (u8 *)bcast_beta;
         asm volatile(
             "esp.vld.128.ip q4, %[r0], 0\n"   /* q4 = alpha */
             "esp.vld.128.ip q5, %[r1], 0\n"   /* q5 = beta  */
             : [r0] "+r"(ptr0), [r1] "+r"(ptr1) :: "memory"
         );
 
-        /* Compute |p0 - q0| < alpha */
+        /* Compute threshold mask in a single asm block */
         asm volatile(
-            "esp.vsub.u8 q6, q1, q2\n"        /* q6 = p0 -sat q0 */
-            "esp.vsub.u8 q7, q2, q1\n"        /* q7 = q0 -sat p0 */
-            "esp.vmax.u8 q6, q6, q7\n"        /* q6 = |p0 - q0|  */
-            "esp.vcmp.lt.u8 q6, q6, q4\n"     /* q6 = mask: |p0-q0| < alpha */
-            ::: "memory"
-        );
+            /* |p0 - q0| < alpha */
+            "esp.vsub.u8 q6, q1, q2\n"
+            "esp.vsub.u8 q7, q2, q1\n"
+            "esp.vmax.u8 q6, q6, q7\n"
+            "esp.vcmp.lt.u8 q6, q6, q4\n"     /* q6 = mask0 */
 
-        /* Compute |p1 - p0| < beta, AND with accumulated mask */
-        asm volatile(
-            "esp.vsub.u8 q7, q0, q1\n"        /* q7 = p1 -sat p0 */
-            "esp.vsub.u8 q4, q1, q0\n"        /* q4 = p0 -sat p1 (reuse q4) */
-            "esp.vmax.u8 q7, q7, q4\n"        /* q7 = |p1 - p0|  */
-            "esp.vcmp.lt.u8 q7, q7, q5\n"     /* q7 = mask: |p1-p0| < beta */
-            "esp.andq q6, q6, q7\n"           /* q6 &= q7 */
-            ::: "memory"
-        );
+            /* |p1 - p0| < beta */
+            "esp.vsub.u8 q7, q0, q1\n"
+            "esp.vsub.u8 q4, q1, q0\n"        /* reuse q4 */
+            "esp.vmax.u8 q7, q7, q4\n"
+            "esp.vcmp.lt.u8 q7, q7, q5\n"
+            "esp.andq q6, q6, q7\n"           /* q6 &= mask1 */
 
-        /* Compute |q1 - q0| < beta, AND with accumulated mask */
-        asm volatile(
-            "esp.vsub.u8 q7, q3, q2\n"        /* q7 = q1 -sat q0 */
-            "esp.vsub.u8 q4, q2, q3\n"        /* q4 = q0 -sat q1 */
-            "esp.vmax.u8 q7, q7, q4\n"        /* q7 = |q1 - q0|  */
-            "esp.vcmp.lt.u8 q7, q7, q5\n"     /* q7 = mask: |q1-q0| < beta */
-            "esp.andq q6, q6, q7\n"           /* q6 = final mask  */
+            /* |q1 - q0| < beta */
+            "esp.vsub.u8 q7, q3, q2\n"
+            "esp.vsub.u8 q4, q2, q3\n"
+            "esp.vmax.u8 q7, q7, q4\n"
+            "esp.vcmp.lt.u8 q7, q7, q5\n"
+            "esp.andq q6, q6, q7\n"           /* q6 = final mask */
             ::: "memory"
         );
 
@@ -130,10 +152,19 @@ void FilterHorLuma_simd(
         );
     }
 
-    /* Convert byte mask (0xFF/0x00 per lane) to bitmask */
-    u32 mask = 0;
-    for (int i = 0; i < 16; i++) {
-        if (mask_bytes[i]) mask |= (1u << i);
+    /* Convert byte mask to bitmask using word-level extraction */
+    u32 mask;
+    {
+        const u32 *mw = (const u32 *)mask_bytes;
+        /* Each byte is 0xFF or 0x00; extract one bit per byte */
+        mask  = (mw[0] & 0x01) | ((mw[0] >> 7) & 0x02)
+              | ((mw[0] >> 14) & 0x04) | ((mw[0] >> 21) & 0x08);
+        mask |= ((mw[1] & 0x01) | ((mw[1] >> 7) & 0x02)
+              | ((mw[1] >> 14) & 0x04) | ((mw[1] >> 21) & 0x08)) << 4;
+        mask |= ((mw[2] & 0x01) | ((mw[2] >> 7) & 0x02)
+              | ((mw[2] >> 14) & 0x04) | ((mw[2] >> 21) & 0x08)) << 8;
+        mask |= ((mw[3] & 0x01) | ((mw[3] >> 7) & 0x02)
+              | ((mw[3] >> 14) & 0x04) | ((mw[3] >> 21) & 0x08)) << 12;
     }
 
     /* Early-out: no pixels need filtering */
