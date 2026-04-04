@@ -16,8 +16,8 @@ residuals, and applies new optimization techniques discovered along the way.
 | write_output_blocks | 9% (9ms) | **4.52x** | SIMD optimized |
 | deblock_hor_luma | 24% (24ms) | **3.04x** | SIMD threshold + scalar filter |
 | convert_image_to_ppa | 11% (11ms) | **1.06x** | Scalar word-pack (PIE N/A) |
-| interpolate_hor_half | 7% (part of 20ms) | **1.02x** (abandoned) | Scalar kept — sliding window defeats SIMD |
-| interpolate_chroma_hor | 7% (7ms) | skipped | Scalar kept — same issues + small blocks |
+| interpolate_hor_half | 7% (part of 20ms) | **1.03x** (abandoned) | Scalar kept — no register byte shift exists |
+| interpolate_chroma_hor | 7% (7ms) | skipped | Scalar kept — same byte shift limitation + trivial compute |
 
 ### Round 1 Results (i32 block-order residual layout, historical)
 
@@ -347,12 +347,16 @@ residuals with 16-byte alignment.
 1. **Only 8 vector registers (q0-q7)**: Severe register pressure. Recommend
    reserving q6-q7 for constants (zero, 255) and using q0-q5 for data.
 
-2. **No lane shuffle/permute and no register-only byte shift**: Can't rearrange
-   elements within a register. `esp.src.q` does NOT use SAR set by `movx.w.sar` —
-   it only uses internal alignment state from `usar` loads. There is no way to
-   extract byte-shifted views from Q registers without going back to memory.
-   This prevents vectorizing horizontal sliding-window filters and non-power-of-2
-   interleave patterns (like PPA's 3:1 chroma:luma ratio).
+2. **No lane shuffle/permute and no register-only byte shift**: Exhaustively
+   confirmed — there is NO way to byte-shift Q register contents without going
+   through memory. Every shift/slide instruction was tested on hardware:
+   - `esp.src.q` — ignores `movx.w.sar`, only uses usar internal alignment state
+   - `esp.srci.2q` / `esp.srcxxp.2q` — right-shift with **zero-fill** (ignores qs)
+   - `esp.slci.2q` / `esp.slcxxp.2q` — left-shift, fills from qs **tail** (wrong direction)
+   - `esp.vsld.8` / `esp.vsrd.8` — **bit-level** shifts within each byte lane
+   - Confirmed by ESP32-S3 architecture research: same limitation exists on S3
+   This prevents vectorizing horizontal sliding-window filters (like 6-tap FIR)
+   and non-power-of-2 interleave patterns (like PPA's 3:1 chroma:luma ratio).
 
 3. **No i16 shift instructions**: `vsr.s32` and `vsl.32` exist for 32-bit lanes
    only. For i16 shifts, must use the QACC path or scalar.
@@ -385,17 +389,73 @@ residuals with 16-byte alignment.
 - SIMD computes the mask, scalar applies the filter only where needed
 - The common case is "most elements don't need processing" (early-out wins)
 
+**Horizontal sliding-window algorithms cannot be efficiently vectorized:**
+- Each output pixel reads overlapping input positions (e.g., 6-tap FIR uses
+  offsets 0-5, next pixel uses 1-6). The scalar code loads each byte once and
+  reuses it across multiple outputs via register rotation — perfect data reuse.
+- SIMD needs "shifted views" of the same data. PIE has no register-only byte
+  shift (exhaustively confirmed on hardware). Each view requires a 3-instruction
+  usar round-trip through memory. 6 views × 3 insns = 18 load insns to feed
+  11 compute insns — SIMD can't beat the scalar's zero-overhead reuse.
+- Tested 6 different approaches on horizontal luma interpolation, best was 1.07x.
+  Confirmed by ESP32-S3 architecture research: same limitation, same conclusion.
+
+---
+
+## Optimization Process Lessons
+
+### Don't give up after the first slow result
+
+The deblocking filter progressed from **0.50x to 3.04x** across 6 iterations.
+Each "failure" revealed a specific overhead to eliminate:
+
+| Iteration | Speed | What we learned |
+|---|---|---|
+| 1 (0.50x) | memcpy kills SIMD | Never copy to aligned buffers — use usar |
+| 2 (1.16x) | memset kills broadcast | Use vldbc.8 or scalar word-fill |
+| 3 (1.69x) | Multiple asm blocks hurt | Merge into single block |
+| 4 (2.44x) | Bitmask conversion wastes time | Check mask_bytes directly |
+| 5 (2.58x) | Flash tables are slow | Copy to SRAM at init |
+| 6 (3.04x) | Word-fill broadcast is wasteful | Use vldbc.8 (1-byte load) |
+
+If we had stopped at 0.50x ("SIMD is slower, abandon"), we'd have missed a 3x win.
+
+### Always verify instruction behavior on hardware before building around it
+
+We built an entire interpolation approach around `esp.src.q` + `esp.movx.w.sar`,
+assuming src.q would use the SAR value we set. Hardware testing proved src.q
+**ignores** movx.w.sar entirely — it uses a separate internal alignment state.
+This wasted an iteration but the PIE instruction tests caught the bug immediately.
+
+**Rule**: before using any PIE instruction in a new way, add a targeted test in
+`pie_test_*.c` that verifies the exact behavior you're depending on.
+
+### Measure at all relevant block sizes
+
+The H.264 interpolation is called with block sizes from 4×4 to 16×16. Testing
+only 16×16 would have missed that the scalar 4×4 path got a free 1.11x speedup
+just from the SRAM clip table — a useful finding for the actual decoder.
+
+### Know when the architecture says "no"
+
+After exhaustively testing every shift/slide instruction (`src.q`, `srci.2q`,
+`slci.2q`, `srcxxp.2q`, `slcxxp.2q`, `vsld.8`, `vsrd.8`) and confirming with
+internet research that the ESP32-S3 has the same limitation, we can confidently
+say: **horizontal sliding-window filters cannot be efficiently vectorized on
+ESP32-P4 PIE**. This is an architectural fact, not an implementation failure.
+Document it and move on.
+
 ---
 
 ## Reference Files
 
 | File | Purpose |
 |---|---|
-| `main/pie_tests.c` | PIE instruction reference & verification (35 tests, all passing) |
+| `main/pie_tests.c` | PIE instruction reference & verification (239 tests, all passing) |
 | `main/h264_tests.c` | H264 function correctness + performance benchmark harness |
 | `main/h264_test_helpers.h` | Shared types, macros, test structures |
 | `main/write_output_blocks_simd_p4.c` | 4.52x SIMD: widen/add/clamp/narrow pipeline |
-| `main/deblock_filter_simd_p4.c` | 2.58x hybrid: SIMD threshold mask + scalar filter |
+| `main/deblock_filter_simd_p4.c` | 3.04x hybrid: SIMD threshold mask + scalar filter |
 | `main/convert_ppa_simd_p4.c` | 1.06x scalar word-pack (PIE not applicable) |
 | `main/test_runner.c` | Top-level test orchestration + SIMD memcpy/memset benchmarks |
 

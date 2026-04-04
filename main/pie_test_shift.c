@@ -713,6 +713,103 @@ void run_pie_test_shift(int *pass, int *total) {
         }
     }
 
+    /* ── srci.2q with SWAPPED register roles ──
+     *
+     * Theory: srci.2q concatenates qd:qs (high:low), shifts right by
+     * (imm+1) bytes. If we put DATA in qs and ZEROS in qd, the right
+     * shift should pull data bytes from qs into qd, giving us a
+     * byte-shifted view!
+     *
+     * Test: q0=zeros (qd), q1=[0..15] (qs), srci.2q q0, q1, N
+     * Expected: q0 = [q1[N+1], q1[N+2], ..., q1[15], 0, 0, ...]
+     * Wait — that's still not a window. Let me think...
+     *
+     * concat(qd=zeros, qs=data) = [0,0,...,0, 0,1,2,...,15] (32 bytes)
+     * shift right by 1 byte: [0, 0,0,...,0, 0,1,2,...,14] → low 16 = [0,0,...,0,0,1,2,...,14]
+     * Hmm, that pushes data OFF the end.
+     *
+     * Actually for a useful shift we want: concat(data_hi, data_lo),
+     * then shift right to slide bytes from hi into lo.
+     * Put CONTINUATION data in qd, MAIN data in qs.
+     * srci.2q q_continuation, q_main, N
+     * concat = [continuation : main], shift right N+1 → [cont[N+1..15], main[0..15-N-1]]
+     *
+     * For our case: q0 has bytes [16..31], q1 has bytes [0..15].
+     * srci.2q q0, q1, 0: concat=[16..31, 0..15], shift right 1 → [15, 16..31, 0..14] low16 = [31, 0, 1, ..., 13]
+     * Hmm, that wraps around. Not quite right either.
+     *
+     * Let me just test all combinations and see what happens.
+     */
+    ESP_LOGI(PIE_TAG, "--- srci.2q swapped registers ---");
+    {
+        uint8_t data[16] __attribute__((aligned(16)));
+        uint8_t cont[16] __attribute__((aligned(16)));
+        for (int i = 0; i < 16; i++) { data[i] = (uint8_t)i; cont[i] = (uint8_t)(i + 16); }
+
+        /* Test: q0=cont=[16..31], q1=data=[0..15], srci.2q q0, q1, imm */
+        for (int imm = 0; imm <= 4; imm++)
+        {
+            uint8_t out[16] __attribute__((aligned(16)));
+            register uint8_t *pd asm("a0") = cont;   /* q0 = continuation */
+            register uint8_t *ps asm("a1") = data;    /* q1 = data */
+            register uint8_t *po asm("a2") = out;
+
+            switch (imm) {
+            case 0:
+                asm volatile(
+                    "esp.vld.128.ip q0, %[pd], 0\n" "esp.vld.128.ip q1, %[ps], 0\n"
+                    "esp.srci.2q q0, q1, 0\n" "esp.vst.128.ip q0, %[po], 0\n"
+                    : [pd]"+r"(pd),[ps]"+r"(ps),[po]"+r"(po) :: "memory"); break;
+            case 1:
+                asm volatile(
+                    "esp.vld.128.ip q0, %[pd], 0\n" "esp.vld.128.ip q1, %[ps], 0\n"
+                    "esp.srci.2q q0, q1, 1\n" "esp.vst.128.ip q0, %[po], 0\n"
+                    : [pd]"+r"(pd),[ps]"+r"(ps),[po]"+r"(po) :: "memory"); break;
+            case 2:
+                asm volatile(
+                    "esp.vld.128.ip q0, %[pd], 0\n" "esp.vld.128.ip q1, %[ps], 0\n"
+                    "esp.srci.2q q0, q1, 2\n" "esp.vst.128.ip q0, %[po], 0\n"
+                    : [pd]"+r"(pd),[ps]"+r"(ps),[po]"+r"(po) :: "memory"); break;
+            case 3:
+                asm volatile(
+                    "esp.vld.128.ip q0, %[pd], 0\n" "esp.vld.128.ip q1, %[ps], 0\n"
+                    "esp.srci.2q q0, q1, 3\n" "esp.vst.128.ip q0, %[po], 0\n"
+                    : [pd]"+r"(pd),[ps]"+r"(ps),[po]"+r"(po) :: "memory"); break;
+            case 4:
+                asm volatile(
+                    "esp.vld.128.ip q0, %[pd], 0\n" "esp.vld.128.ip q1, %[ps], 0\n"
+                    "esp.srci.2q q0, q1, 4\n" "esp.vst.128.ip q0, %[po], 0\n"
+                    : [pd]"+r"(pd),[ps]"+r"(ps),[po]"+r"(po) :: "memory"); break;
+            }
+
+            char label[64];
+            snprintf(label, sizeof(label), "srci q0=[16..31] q1=[0..15] imm=%d", imm);
+            pie_log_vec_u8(label, out);
+            ESP_LOGI(PIE_TAG, "  INFO: %s", label);
+            *pass += 1; (*total)++;
+        }
+
+        /* Also test srcxxp.2q which takes register shift amount */
+        {
+            uint8_t out[16] __attribute__((aligned(16)));
+            register uint8_t *pd asm("a0") = cont;
+            register uint8_t *ps asm("a1") = data;
+            register uint8_t *po asm("a2") = out;
+            register int32_t sh1 asm("a3") = 0;  /* shift by 1 byte */
+            register int32_t sh2 asm("a4") = 0;
+            asm volatile(
+                "esp.vld.128.ip q0, %[pd], 0\n" "esp.vld.128.ip q1, %[ps], 0\n"
+                "esp.srcxxp.2q q0, q1, %[sh1], %[sh2]\n"
+                "esp.vst.128.ip q0, %[po], 0\n"
+                : [pd]"+r"(pd),[ps]"+r"(ps),[po]"+r"(po)
+                : [sh1]"r"(sh1),[sh2]"r"(sh2) : "memory"
+            );
+            pie_log_vec_u8("srcxxp q0=[16..31] q1=[0..15] sh=0", out);
+            ESP_LOGI(PIE_TAG, "  INFO: srcxxp logged");
+            *pass += 1; (*total)++;
+        }
+    }
+
     /* Also test: does usar load OVERWRITE a manually set SAR?
      * Set SAR=5, then do an usar load from an aligned address (offset 0).
      * Does SAR become 0 (from usar) or stay 5? */

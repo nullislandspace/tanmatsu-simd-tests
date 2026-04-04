@@ -338,16 +338,27 @@ Vector slide right: SAR-controlled bit shift across concatenated qs:qt.
 Same SAR requirements as vsld.
 
 ### esp.srci.2q qd, qs, imm
-Shift concatenated qd:qs right by (imm+1) bytes. Result in qd. Zero-filled (does NOT pull from qs).
+Shift qd right by (imm+1) bytes, zero-fill. **qs is completely ignored** — tested
+with various qs contents, output is always qd shifted right with zeros, regardless of qs.
+Result stored in qd (modified in-place).
+
+Verified: q0=[16..31], q1=[0..15], `srci.2q q0, q1, 0` → [17,18,...,31, 0] (zero, not q1 data).
 
 ### esp.slci.2q qd, qs, imm
-Shift concatenated qd:qs left by (imm+1) bytes. Result in qd. Zero-filled.
+Shift qd left by (imm+1) bytes. Fills vacated low bytes from the **tail** (high bytes)
+of qs. Result stored in qd.
+
+Verified: q0=[0..15], q1=[16..31], `slci.2q q0, q1, 2` → [29,30,31, 0,1,...,12].
+Takes last 3 bytes of q1 (29,30,31) and prepends them, shifts q0 data left.
+
+**Note**: fills from qs tail, not head. Not useful as a right-shift-with-carry.
 
 ### esp.srcxxp.2q qd, qs, rs1, rs2
-Register-controlled version of srci.2q. Shift right by (rs1+1) bytes. Zero-filled.
+Register-controlled version of srci.2q. Shift qd right by (rs1+1) bytes, zero-fill.
+Same behavior as srci.2q — qs is ignored. Verified on hardware.
 
 ### esp.slcxxp.2q qd, qs, rs1, rs2
-Register-controlled version of slci.2q. Shift left by (rs1+1) bytes. Zero-filled.
+Register-controlled version of slci.2q. Shift left, fill from qs tail.
 
 ### esp.src.q qd, qs, qt
 Unaligned source combine: extracts aligned 128-bit result from two usar-loaded registers.

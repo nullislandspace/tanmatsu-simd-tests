@@ -1,20 +1,18 @@
 /*
- * h264bsdInterpolateChromaHor — kept as plain C.
+ * h264bsdInterpolateChromaHor — kept as plain C (scalar).
  *
- * Analysis: PIE SIMD is NOT well-suited to this function.
+ * Bilinear horizontal chroma interpolation:
+ *   out = (val * A + xFrac * B + 4) >> 3, where val = 8 - xFrac
  *
- * The bilinear chroma interpolation has:
- *   - Small working set: max 8 pixels per row (one i16 register after widen)
- *   - Overlapping horizontal reads (A, B are adjacent pixels) — same
- *     shifted-view problem as luma interpolation
- *   - Requires multiply: val*A + xFrac*B per pixel. esp.vmul.s16 has an
- *     unwanted >>4 shift, so must use QACC path (vmulas + srcmb)
- *   - 2x2 block inner loop interleaves current and next row reads
- *   - Only 4-6 scalar ops per pixel — not enough compute to amortize
- *     SIMD widen/narrow/QACC overhead
- *
- * Based on luma interpolation findings (1.02x best), SIMD optimization
- * of this function is not expected to provide meaningful speedup.
+ * Not viable for SIMD optimization on ESP32-P4 PIE:
+ *   - Same horizontal sliding window problem as luma (A and B at offsets 0,1)
+ *   - No register-only byte shift (confirmed exhaustively in Step 4)
+ *   - Only 2 taps (vs luma's 6) — even less compute to amortize load overhead
+ *   - Small blocks: max 8×8 pixels per component
+ *   - Trivial per-pixel cost: 2 muls + 1 add + 1 shift = 4 ops
+ *   - esp.vmul.s16 has unwanted >>4, would need QACC multiply path
+ *   - The 2×2 interleaved row processing in the original is already
+ *     very cache-friendly for the scalar access pattern
  */
 
 #include "h264_test_helpers.h"
