@@ -484,4 +484,332 @@ void run_pie_test_arithmetic(int *pass, int *total) {
         *pass += ok;
         (*total)++;
     }
+
+    /* ═══════════════════════════════════════════════════════════════
+     * Extended vsadds / vssubs boundary tests
+     *
+     * The existing tests only use small positive scalars. These tests
+     * probe boundary conditions: large scalars, scalar=0, scalar=255,
+     * scalar truncation (does a 32-bit scalar get masked to lane width?),
+     * negative scalars passed to unsigned variants, saturation edges.
+     * ═══════════════════════════════════════════════════════════════ */
+
+    ESP_LOGI(PIE_TAG, "--- vsadds/vssubs boundary ---");
+
+    /* ── vsadds.u16: scalar=255 (the broadcast use case) ── */
+    {
+        uint16_t a[8] __attribute__((aligned(16))) = {0, 0, 0, 0, 0, 0, 0, 0};
+        uint16_t out[8] __attribute__((aligned(16)));
+        uint16_t expect[8] = {255, 255, 255, 255, 255, 255, 255, 255};
+        register uint16_t *pa asm("a0") = a;
+        register uint16_t *po asm("a1") = out;
+        register uint32_t scalar asm("a2") = 255;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.u16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        *pass += pie_check("vsadds.u16 zero+255", out, expect, 16);
+        (*total)++;
+    }
+
+    /* ── vsadds.u16: scalar=255 with non-zero base ── */
+    {
+        uint16_t a[8] __attribute__((aligned(16))) = {0, 1, 100, 255, 256, 1000, 65280, 65535};
+        uint16_t out[8] __attribute__((aligned(16)));
+        uint16_t expect[8] = {255, 256, 355, 510, 511, 1255, 65535, 65535};
+        register uint16_t *pa asm("a0") = a;
+        register uint16_t *po asm("a1") = out;
+        register uint32_t scalar asm("a2") = 255;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.u16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        *pass += pie_check("vsadds.u16 base+255", out, expect, 16);
+        (*total)++;
+    }
+
+    /* ── vsadds.u16: scalar=0 (should be identity) ── */
+    {
+        uint16_t a[8] __attribute__((aligned(16))) = {0, 1, 100, 255, 1000, 32768, 65534, 65535};
+        uint16_t out[8] __attribute__((aligned(16)));
+        uint16_t expect[8] = {0, 1, 100, 255, 1000, 32768, 65534, 65535};
+        register uint16_t *pa asm("a0") = a;
+        register uint16_t *po asm("a1") = out;
+        register uint32_t scalar asm("a2") = 0;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.u16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        *pass += pie_check("vsadds.u16 +0 identity", out, expect, 16);
+        (*total)++;
+    }
+
+    /* ── vsadds.u16: scalar=65535 (max u16) ── */
+    {
+        uint16_t a[8] __attribute__((aligned(16))) = {0, 1, 100, 65535, 0, 0, 0, 0};
+        uint16_t out[8] __attribute__((aligned(16)));
+        /* If scalar is treated as u16, all saturate to 65535 */
+        uint16_t expect_full[8] = {65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535};
+        register uint16_t *pa asm("a0") = a;
+        register uint16_t *po asm("a1") = out;
+        register uint32_t scalar asm("a2") = 65535;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.u16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        int ok = pie_check("vsadds.u16 +65535", out, expect_full, 16);
+        if (!ok) {
+            /* Log what we actually got to understand truncation */
+            pie_log_vec_s16("  got", (int16_t*)out);
+        }
+        *pass += ok;
+        (*total)++;
+    }
+
+    /* ── vsadds.u16: scalar=0x10000 (exceeds u16 range)
+     *    Question: does the hardware truncate to 16 bits, or use full 32-bit? ── */
+    {
+        uint16_t a[8] __attribute__((aligned(16))) = {0, 0, 0, 0, 0, 0, 0, 0};
+        uint16_t out[8] __attribute__((aligned(16)));
+        /* If truncated to u16: 0x10000 & 0xFFFF = 0, so result = 0 */
+        uint16_t expect_trunc[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        /* If full 32-bit: 0 + 65536 saturates to 65535 */
+        uint16_t expect_full[8] = {65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535};
+        register uint16_t *pa asm("a0") = a;
+        register uint16_t *po asm("a1") = out;
+        register uint32_t scalar asm("a2") = 0x10000;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.u16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        int is_trunc = (memcmp(out, expect_trunc, 16) == 0);
+        int is_full  = (memcmp(out, expect_full, 16) == 0);
+        if (is_trunc) {
+            ESP_LOGI(PIE_TAG, "  PASS: vsadds.u16 +0x10000 (scalar TRUNCATED to u16)");
+        } else if (is_full) {
+            ESP_LOGI(PIE_TAG, "  PASS: vsadds.u16 +0x10000 (scalar used as full u32, saturated)");
+        } else {
+            ESP_LOGE(PIE_TAG, "  FAIL: vsadds.u16 +0x10000 (unexpected result)");
+            pie_log_vec_s16("  got", (int16_t*)out);
+        }
+        *pass += (is_trunc || is_full);
+        (*total)++;
+    }
+
+    /* ── vsadds.u16: negative scalar (0xFFFFFFFF = -1 as i32)
+     *    Question: treated as unsigned (huge add → saturate)? Or signed (subtract 1)? ── */
+    {
+        uint16_t a[8] __attribute__((aligned(16))) = {100, 100, 100, 100, 0, 1, 65535, 50000};
+        uint16_t out[8] __attribute__((aligned(16)));
+        /* If treated as u32 0xFFFFFFFF → truncated to u16 = 65535 → saturate */
+        uint16_t expect_unsigned[8] = {65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535};
+        /* If treated as signed -1 → subtract 1 with unsigned saturation at 0 */
+        uint16_t expect_signed[8] = {99, 99, 99, 99, 0, 0, 65534, 49999};
+        register uint16_t *pa asm("a0") = a;
+        register uint16_t *po asm("a1") = out;
+        register uint32_t scalar asm("a2") = 0xFFFFFFFF;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.u16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        int is_unsigned = (memcmp(out, expect_unsigned, 16) == 0);
+        int is_signed   = (memcmp(out, expect_signed, 16) == 0);
+        if (is_unsigned) {
+            ESP_LOGI(PIE_TAG, "  PASS: vsadds.u16 scalar=-1 (treated as large unsigned)");
+        } else if (is_signed) {
+            ESP_LOGI(PIE_TAG, "  PASS: vsadds.u16 scalar=-1 (treated as signed, subtracts)");
+        } else {
+            ESP_LOGE(PIE_TAG, "  FAIL: vsadds.u16 scalar=-1 (unexpected result)");
+            pie_log_vec_s16("  got", (int16_t*)out);
+        }
+        *pass += (is_unsigned || is_signed);
+        (*total)++;
+    }
+
+    /* ── vsadds.s16: scalar=255 (our broadcast use case, but signed context)
+     *    Zero + 255 should give 255 in each s16 lane ── */
+    {
+        int16_t a[8] __attribute__((aligned(16))) = {0, 0, 0, 0, 0, 0, 0, 0};
+        int16_t out[8] __attribute__((aligned(16)));
+        int16_t expect[8] = {255, 255, 255, 255, 255, 255, 255, 255};
+        register int16_t *pa asm("a0") = a;
+        register int16_t *po asm("a1") = out;
+        register int32_t scalar asm("a2") = 255;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.s16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        *pass += pie_check("vsadds.s16 zero+255", out, expect, 16);
+        (*total)++;
+    }
+
+    /* ── vsadds.s16: scalar=-1 ── */
+    {
+        int16_t a[8] __attribute__((aligned(16))) = {0, 1, -1, 100, -100, 32767, -32768, -32767};
+        int16_t out[8] __attribute__((aligned(16)));
+        int16_t expect[8] = {-1, 0, -2, 99, -101, 32766, -32768, -32768};
+        register int16_t *pa asm("a0") = a;
+        register int16_t *po asm("a1") = out;
+        register int32_t scalar asm("a2") = -1;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.s16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        *pass += pie_check("vsadds.s16 -1", out, expect, 16);
+        (*total)++;
+    }
+
+    /* ── vsadds.s16: large positive scalar=32767 ── */
+    {
+        int16_t a[8] __attribute__((aligned(16))) = {0, 1, -1, 32767, -32768, -1, 100, -100};
+        int16_t out[8] __attribute__((aligned(16)));
+        /* If scalar truncated to s16: 32767 fits, straightforward */
+        int16_t expect[8] = {32767, 32767, 32766, 32767, -1, 32766, 32767, 32667};
+        register int16_t *pa asm("a0") = a;
+        register int16_t *po asm("a1") = out;
+        register int32_t scalar asm("a2") = 32767;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.s16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        int ok = pie_check("vsadds.s16 +32767", out, expect, 16);
+        if (!ok) {
+            pie_log_vec_s16("  got", out);
+            pie_log_vec_s16("  exp", expect);
+        }
+        *pass += ok;
+        (*total)++;
+    }
+
+    /* ── vsadds.s16: scalar=0x10000 (exceeds s16 range)
+     *    Question: truncated to s16 (=0)? Or added as full s32? ── */
+    {
+        int16_t a[8] __attribute__((aligned(16))) = {0, 100, -100, 0, 0, 0, 0, 0};
+        int16_t out[8] __attribute__((aligned(16)));
+        int16_t expect_trunc[8] = {0, 100, -100, 0, 0, 0, 0, 0}; /* +0 = identity */
+        int16_t expect_full[8] = {32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767}; /* +65536 saturates */
+        register int16_t *pa asm("a0") = a;
+        register int16_t *po asm("a1") = out;
+        register int32_t scalar asm("a2") = 0x10000;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.s16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        int is_trunc = (memcmp(out, expect_trunc, 16) == 0);
+        int is_full  = (memcmp(out, expect_full, 16) == 0);
+        if (is_trunc) {
+            ESP_LOGI(PIE_TAG, "  PASS: vsadds.s16 +0x10000 (scalar TRUNCATED to s16 = 0)");
+        } else if (is_full) {
+            ESP_LOGI(PIE_TAG, "  PASS: vsadds.s16 +0x10000 (scalar full 32-bit, saturated)");
+        } else {
+            ESP_LOGE(PIE_TAG, "  FAIL: vsadds.s16 +0x10000 (unexpected result)");
+            pie_log_vec_s16("  got", out);
+        }
+        *pass += (is_trunc || is_full);
+        (*total)++;
+    }
+
+    /* ── vsadds.u8: scalar=255 (broadcast use case) ── */
+    {
+        uint8_t a[16] __attribute__((aligned(16))) = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+        uint8_t out[16] __attribute__((aligned(16)));
+        uint8_t expect[16] = {255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255};
+        register uint8_t *pa asm("a0") = a;
+        register uint8_t *po asm("a1") = out;
+        register uint32_t scalar asm("a2") = 255;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.u8 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        *pass += pie_check("vsadds.u8 zero+255", out, expect, 16);
+        (*total)++;
+    }
+
+    /* ── vsadds.u8: scalar=256 (exceeds u8 range)
+     *    Question: truncated to u8 (=0)? Or saturated? ── */
+    {
+        uint8_t a[16] __attribute__((aligned(16))) = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+        uint8_t out[16] __attribute__((aligned(16)));
+        uint8_t expect_trunc[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}; /* 256 & 0xFF = 0 */
+        uint8_t expect_sat[16] = {255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255};
+        register uint8_t *pa asm("a0") = a;
+        register uint8_t *po asm("a1") = out;
+        register uint32_t scalar asm("a2") = 256;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vsadds.u8 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        int is_trunc = (memcmp(out, expect_trunc, 16) == 0);
+        int is_sat   = (memcmp(out, expect_sat, 16) == 0);
+        if (is_trunc) {
+            ESP_LOGI(PIE_TAG, "  PASS: vsadds.u8 +256 (scalar TRUNCATED to u8 = 0)");
+        } else if (is_sat) {
+            ESP_LOGI(PIE_TAG, "  PASS: vsadds.u8 +256 (scalar full, saturated to 255)");
+        } else {
+            ESP_LOGE(PIE_TAG, "  FAIL: vsadds.u8 +256 (unexpected result)");
+            pie_log_vec_u8("  got", out);
+        }
+        *pass += (is_trunc || is_sat);
+        (*total)++;
+    }
+
+    /* ── vssubs.u16: scalar=255 (subtract from various values) ── */
+    {
+        uint16_t a[8] __attribute__((aligned(16))) = {0, 1, 100, 254, 255, 256, 1000, 65535};
+        uint16_t out[8] __attribute__((aligned(16)));
+        uint16_t expect[8] = {0, 0, 0, 0, 0, 1, 745, 65280};
+        register uint16_t *pa asm("a0") = a;
+        register uint16_t *po asm("a1") = out;
+        register uint32_t scalar asm("a2") = 255;
+        asm volatile(
+            "esp.vld.128.ip q0, %[pa], 0\n"
+            "esp.vssubs.u16 q1, q0, %[scalar]\n"
+            "esp.vst.128.ip q1, %[po], 0\n"
+            : [pa] "+r"(pa), [po] "+r"(po)
+            : [scalar] "r"(scalar) : "memory"
+        );
+        int ok = pie_check("vssubs.u16 -255", out, expect, 16);
+        if (!ok) {
+            pie_log_vec_s16("  got", (int16_t*)out);
+            pie_log_vec_s16("  exp", (int16_t*)expect);
+        }
+        *pass += ok;
+        (*total)++;
+    }
 }
