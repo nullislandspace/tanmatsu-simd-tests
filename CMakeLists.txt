@@ -23,6 +23,17 @@ set(APP_SOURCES
     main/pie_test_fft.c
     main/pie_test_loop.c
     main/test_runner.c
+    main/h264_tests.c
+    main/convert_ppa_plain.c
+    main/convert_ppa_simd_p4.c
+    main/write_output_blocks_plain.c
+    main/write_output_blocks_simd_p4.c
+    main/deblock_filter_plain.c
+    main/deblock_filter_simd_p4.c
+    main/interp_hor_half_plain.c
+    main/interp_hor_half_simd_p4.c
+    main/interp_chroma_hor_plain.c
+    main/interp_chroma_hor_simd_p4.c
 )
 
 # Include directories — add paths to your headers here

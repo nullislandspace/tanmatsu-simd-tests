@@ -9,6 +9,7 @@
 
 #include "test_runner.h"
 #include "pie_tests.h"
+#include "h264_tests.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "pax_fonts.h"
@@ -412,6 +413,10 @@ void run_all_tests(pax_buf_t *fb, void (*blit)(void)) {
 
     /* --- PIE instruction tests --- */
     run_pie_instruction_tests(fb, blit, &line);
+    line++;
+
+    /* --- H264 function tests --- */
+    run_h264_tests(fb, blit, &line);
     line++;
 
 #if ENABLE_MEMCPY_MEMSET_DMA_TESTS
