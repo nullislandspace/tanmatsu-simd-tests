@@ -22,8 +22,8 @@ static char const TAG[] = "main";
 // Global variables
 static size_t                       display_h_res        = 0;
 static size_t                       display_v_res        = 0;
-static lcd_color_rgb_pixel_format_t display_color_format = LCD_COLOR_PIXEL_FORMAT_RGB565;
-static lcd_rgb_data_endian_t        display_data_endian  = LCD_RGB_DATA_ENDIAN_LITTLE;
+static bsp_display_color_format_t   display_color_format = BSP_DISPLAY_COLOR_FORMAT_16_565RGB;
+static bsp_display_endianness_t     display_data_endian  = BSP_DISPLAY_ENDIAN_LITTLE;
 static pax_buf_t                    fb                   = {0};
 
 #if defined(CONFIG_BSP_TARGET_KAMI)
@@ -58,7 +58,7 @@ void app_main(void) {
     const bsp_configuration_t bsp_configuration = {
         .display =
             {
-                .requested_color_format = LCD_COLOR_PIXEL_FORMAT_RGB888,
+                .requested_color_format = BSP_DISPLAY_COLOR_FORMAT_24_888RGB,
                 .num_fbs                = 1,
             },
     };
@@ -78,10 +78,10 @@ void app_main(void) {
     // Convert ESP-IDF color format into PAX buffer type
     pax_buf_type_t format = PAX_BUF_24_888RGB;
     switch (display_color_format) {
-        case LCD_COLOR_PIXEL_FORMAT_RGB565:
+        case BSP_DISPLAY_COLOR_FORMAT_16_565RGB:
             format = PAX_BUF_16_565RGB;
             break;
-        case LCD_COLOR_PIXEL_FORMAT_RGB888:
+        case BSP_DISPLAY_COLOR_FORMAT_24_888RGB:
             format = PAX_BUF_24_888RGB;
             break;
         default:
@@ -113,7 +113,7 @@ void app_main(void) {
     format = PAX_BUF_2_PAL;
 #endif
     pax_buf_init(&fb, NULL, display_h_res, display_v_res, format);
-    pax_buf_reversed(&fb, display_data_endian == LCD_RGB_DATA_ENDIAN_BIG);
+    pax_buf_reversed(&fb, display_data_endian == BSP_DISPLAY_ENDIAN_BIG);
 #if defined(CONFIG_BSP_TARGET_KAMI)
     // Temporary addition for supporting epaper devices (irrelevant for Tanmatsu)
     fb.palette      = palette;
