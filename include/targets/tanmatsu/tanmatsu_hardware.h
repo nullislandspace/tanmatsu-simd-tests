@@ -14,12 +14,8 @@
 #define BSP_I2C_INTERNAL_SCL_PIN 10
 
 // Coprocessor
-#if defined(OLD_PROTOTYPE)
-#define BSP_COPROCESSOR_INTERRUPT_PIN 6
-#else
 #define BSP_COPROCESSOR_INTERRUPT_PIN 1
-#endif
-#define BSP_COPROCESSOR_I2C_ADDRESS 0x5f
+#define BSP_COPROCESSOR_I2C_ADDRESS   0x5f
 
 // ESP32-C6 radio
 #define BSP_SDIO_CLK   17
@@ -70,4 +66,18 @@
 #define BSP_I2S_DOUT           28
 
 // LEDs
-#define BSP_LED_COUNT 6
+#define BSP_LED_NUM 6
+
+// CATT port
+#define BSP_CATT_D0_PIN 13
+#define BSP_CATT_D1_PIN 34
+#define BSP_CATT_D2_PIN 5
+#define BSP_CATT_D3_PIN 3
+#define BSP_CATT_D4_PIN 12
+#define BSP_CATT_D5_PIN 15
+#define BSP_CATT_D6_PIN 4
+#define BSP_CATT_D7_PIN 2
+
+#define BSP_I2C_CATT_BUS     1
+#define BSP_I2C_CATT_SDA_PIN BSP_CATT_D4_PIN
+#define BSP_I2C_CATT_SCL_PIN BSP_CATT_D0_PIN

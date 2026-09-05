@@ -4,6 +4,10 @@
 
 #pragma once
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 #include "driver/gpio.h"
@@ -124,6 +128,7 @@ typedef struct {
         struct {
             uint8_t amplifier_enable : 1;
             uint8_t camera_gpio0     : 1;
+            uint8_t amplifier_force  : 1;
         };
     };
 } tanmatsu_coprocessor_outputs_t;
@@ -207,6 +212,9 @@ esp_err_t tanmatsu_coprocessor_set_outputs(tanmatsu_coprocessor_handle_t   handl
 esp_err_t tanmatsu_coprocessor_get_amplifier_enable(tanmatsu_coprocessor_handle_t handle, bool* out_enable);
 esp_err_t tanmatsu_coprocessor_set_amplifier_enable(tanmatsu_coprocessor_handle_t handle, bool enable);
 
+esp_err_t tanmatsu_coprocessor_get_amplifier_force(tanmatsu_coprocessor_handle_t handle, bool* out_force);
+esp_err_t tanmatsu_coprocessor_set_amplifier_force(tanmatsu_coprocessor_handle_t handle, bool force);
+
 esp_err_t tanmatsu_coprocessor_get_camera_gpio0(tanmatsu_coprocessor_handle_t handle, bool* out_enable);
 esp_err_t tanmatsu_coprocessor_set_camera_gpio0(tanmatsu_coprocessor_handle_t handle, bool enable);
 
@@ -236,8 +244,6 @@ esp_err_t tanmatsu_coprocessor_get_pmic_communication_fault(tanmatsu_coprocessor
                                                             bool* out_latch);
 esp_err_t tanmatsu_coprocessor_get_pmic_faults(tanmatsu_coprocessor_handle_t       handle,
                                                tanmatsu_coprocessor_pmic_faults_t* out_faults);
-esp_err_t tanmatsu_coprocessor_set_pmic_adc_control(tanmatsu_coprocessor_handle_t handle, bool trigger,
-                                                    bool continuous);
 esp_err_t tanmatsu_coprocessor_get_pmic_vbat(tanmatsu_coprocessor_handle_t handle, uint16_t* out_vbat);
 esp_err_t tanmatsu_coprocessor_get_pmic_vsys(tanmatsu_coprocessor_handle_t handle, uint16_t* out_vsys);
 esp_err_t tanmatsu_coprocessor_get_pmic_ts(tanmatsu_coprocessor_handle_t handle, uint16_t* out_ts);
@@ -262,3 +268,7 @@ esp_err_t tanmatsu_coprocessor_get_message(tanmatsu_coprocessor_handle_t handle,
                                            bool* out_fade, bool* out_fade_hold);
 esp_err_t tanmatsu_coprocessor_set_message(tanmatsu_coprocessor_handle_t handle, bool red, bool green, bool blue,
                                            bool red_b, bool green_b, bool blue_b, bool fade, bool fade_hold);
+
+#ifdef __cplusplus
+}
+#endif
